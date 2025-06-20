@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Void March</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #0b0b15;
+      font-family: sans-serif;
+      color: #fff;
+    }
+    canvas {
+      display: block;
+    }
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="hud">
+    <div>Turn: <span id="turnCounter">0</span></div>
+    <div>Energy: <span id="energyCounter">0</span></div>
+    <div>Actions Left: <span id="actionsLeft">0</span></div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const state = {
+      nodes: [],
+      connections: [],
+      turn: 0,
+      energy: 5,
+      actionsLeft: 3,
+      selectedNode: null,
+      maxTurns: 40,
+      aiEnergy: 5,
+      aiOwned: []
+    };
+
+    class Node {
+      constructor(x, y, id, isPlayerOwned = false, discovered = false, owner = null) {
+        this.x = x;
+        this.y = y;
+        this.id = id;
+        this.owner = isPlayerOwned ? "player" : owner;
+        this.active = isPlayerOwned || owner === "ai";
+        this.discovered = discovered || isPlayerOwned || owner === "ai";
+      }
+    }
+
+    function setupInitialNodes() {
+      const playerNode = new Node(canvas.width / 3, canvas.height / 2, "node_0", true, true);
+      const aiNode = new Node(canvas.width * 2 / 3, canvas.height / 2, "node_1", false, true, "ai");
+      state.nodes.push(playerNode, aiNode);
+      state.aiOwned.push(aiNode.id);
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = "#555";
+      ctx.lineWidth = 1;
+      state.connections.forEach(([id1, id2]) => {
+        const n1 = state.nodes.find(n => n.id === id1);
+        const n2 = state.nodes.find(n => n.id === id2);
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        ctx.lineTo(n2.x, n2.y);
+        ctx.stroke();
+      });
+
+      state.nodes.forEach(node => {
+        if (!node.discovered) return;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, 10, 0, 2 * Math.PI);
+        ctx.fillStyle = node.owner === "player" ? "#0ff" : node.owner === "ai" ? "#f66" : "#999";
+        ctx.fill();
+        if (node === state.selectedNode) {
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      });
+    }
+
+    function gameLoop() {
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function exploreNearby(selected) {
+      for (let i = 0; i < 3; i++) {
+        const angle = Math.random() * 2 * Math.PI;
+        const radius = 150 + Math.random() * 50;
+        const x = selected.x + Math.cos(angle) * radius;
+        const y = selected.y + Math.sin(angle) * radius;
+        const newNode = new Node(x, y, `node_${state.nodes.length}`, false, true);
+        state.nodes.push(newNode);
+      }
+      state.actionsLeft--;
+    }
+
+    function connectNodes(from, to, owner = "player") {
+      const dx = from.x - to.x;
+      const dy = from.y - to.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const cost = Math.ceil(dist / 100);
+      if (!state.connections.some(c => c.includes(from.id) && c.includes(to.id))) {
+        if (owner === "player" && state.energy >= cost) {
+          state.energy -= cost;
+          state.actionsLeft--;
+        } else if (owner === "ai" && state.aiEnergy >= cost) {
+          state.aiEnergy -= cost;
+        } else {
+          return;
+        }
+        state.connections.push([from.id, to.id]);
+        to.owner = owner;
+        to.active = true;
+        if (owner === "ai") state.aiOwned.push(to.id);
+      }
+    }
+
+    function aiTurn() {
+      const aiNodes = state.nodes.filter(n => n.owner === "ai");
+      aiNodes.forEach(node => {
+        for (let i = 0; i < 2; i++) {
+          const angle = Math.random() * 2 * Math.PI;
+          const radius = 120 + Math.random() * 30;
+          const x = node.x + Math.cos(angle) * radius;
+          const y = node.y + Math.sin(angle) * radius;
+          const newNode = new Node(x, y, `node_${state.nodes.length}`, false, true);
+          state.nodes.push(newNode);
+          connectNodes(node, newNode, "ai");
+        }
+      });
+    }
+
+    function checkWinCondition() {
+      const total = state.nodes.filter(n => n.discovered).length;
+      const playerOwned = state.nodes.filter(n => n.owner === "player").length;
+      const aiOwned = state.nodes.filter(n => n.owner === "ai").length;
+
+      if (playerOwned / total >= 0.6) {
+        alert("Player wins!");
+        window.location.reload();
+      } else if (aiOwned / total >= 0.6) {
+        alert("AI wins!");
+        window.location.reload();
+      } else if (state.turn >= state.maxTurns) {
+        alert(playerOwned > aiOwned ? "Player wins by score!" : "AI wins by score!");
+        window.location.reload();
+      }
+    }
+
+    canvas.addEventListener("click", (e) => {
+      const mx = e.clientX;
+      const my = e.clientY;
+      for (const node of state.nodes) {
+        if (!node.discovered) continue;
+        const dx = node.x - mx;
+        const dy = node.y - my;
+        if (Math.sqrt(dx * dx + dy * dy) < 10) {
+          if (state.selectedNode && state.selectedNode !== node) {
+            connectNodes(state.selectedNode, node);
+          } else {
+            state.selectedNode = node;
+          }
+          updateHUD();
+          return;
+        }
+      }
+    });
+
+    function updateHUD() {
+      document.getElementById("turnCounter").textContent = state.turn;
+      document.getElementById("energyCounter").textContent = state.energy;
+      document.getElementById("actionsLeft").textContent = state.actionsLeft;
+    }
+
+    function nextTurn() {
+      state.turn++;
+      state.energy += state.nodes.filter(n => n.active && n.owner === "player").length;
+      state.actionsLeft = 3;
+      state.selectedNode = null;
+      state.aiEnergy += state.nodes.filter(n => n.active && n.owner === "ai").length;
+      aiTurn();
+      updateHUD();
+      checkWinCondition();
+    }
+
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "e" && state.selectedNode) {
+        exploreNearby(state.selectedNode);
+        updateHUD();
+      } else if (e.key === "n") {
+        nextTurn();
+      }
+    });
+
+    setupInitialNodes();
+    updateHUD();
+    gameLoop();
+  </script>
+</body>
+</html>
