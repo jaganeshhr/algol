@@ -14,16 +14,21 @@
     }
     canvas {
       display: block;
+      cursor: grab;
     }
     #hud {
       position: absolute;
       top: 10px;
-      left: 10px;
+      right: 10px;
       background: rgba(0, 0, 0, 0.5);
       padding: 10px;
       border-radius: 6px;
       font-size: 14px;
       z-index: 10;
+      text-align: right;
+    }
+    #hud div {
+      margin: 2px 0;
     }
 
     /* Start screen overlay */
@@ -81,8 +86,8 @@
 
   <div id="hud">
     <div>Turn: <span id="turnCounter">0</span></div>
-    <div>Energy: <span id="energyCounter">0</span></div>
-    <div>Actions Left: <span id="actionsLeft">0</span></div>
+    <div>⚡ Energy: <span id="energyCounter">0</span></div>
+    <div>🔄 Actions Left: <span id="actionsLeft">0</span></div>
   </div>
 
   <!-- Start Screen -->
@@ -112,48 +117,74 @@
       actionsLeft: 3,
       selectedNode: null,
       maxTurns: 40,
-      aiEnergy: 5,
-      aiOwned: []
+      aiPlayers: 2,
+      aiStates: [],
+      fogOfWar: true,
+      camX: 0,
+      camY: 0,
+      zoom: 1
     };
 
     class Node {
-      constructor(x, y, id, isPlayerOwned = false, discovered = false, owner = null) {
+      constructor(x, y, id, owner = null) {
         this.x = x;
         this.y = y;
         this.id = id;
-        this.owner = isPlayerOwned ? "player" : owner;
-        this.active = isPlayerOwned || owner === "ai";
-        this.discovered = discovered || isPlayerOwned || owner === "ai";
+        this.owner = owner;
+        this.active = owner !== null;
+        this.discovered = owner !== null;
+        this.visible = owner !== null;
       }
     }
 
     function setupInitialNodes() {
-      const playerNode = new Node(canvas.width / 3, canvas.height / 2, "node_0", true, true);
-      const aiNode = new Node(canvas.width * 2 / 3, canvas.height / 2, "node_1", false, true, "ai");
-      state.nodes.push(playerNode, aiNode);
-      state.aiOwned.push(aiNode.id);
+      const spacing = canvas.width / (state.aiPlayers + 1);
+      for (let i = 0; i <= state.aiPlayers; i++) {
+        const x = spacing * (i + 0.5);
+        const y = canvas.height / 2;
+        const owner = i === 0 ? "player" : `ai${i}`;
+        const node = new Node(x, y, `node_${state.nodes.length}`, owner);
+        state.nodes.push(node);
+        if (owner !== "player") {
+          state.aiStates.push({ id: owner, energy: 5, owned: [node.id] });
+        }
+      }
     }
 
     function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(state.zoom, 0, 0, state.zoom, -state.camX * state.zoom, -state.camY * state.zoom);
+      ctx.clearRect(0, 0, canvas.width / state.zoom, canvas.height / state.zoom);
 
+      // Fog overlay
+      if (state.fogOfWar) {
+        ctx.fillStyle = "rgba(0,0,0,0.9)";
+        ctx.fillRect(0, 0, canvas.width / state.zoom, canvas.height / state.zoom);
+      }
+
+      // Draw connections
       ctx.strokeStyle = "#555";
       ctx.lineWidth = 1;
       state.connections.forEach(([id1, id2]) => {
         const n1 = state.nodes.find(n => n.id === id1);
         const n2 = state.nodes.find(n => n.id === id2);
-        ctx.beginPath();
-        ctx.moveTo(n1.x, n1.y);
-        ctx.lineTo(n2.x, n2.y);
-        ctx.stroke();
+        if (n1.visible || n2.visible) {
+          ctx.beginPath();
+          ctx.moveTo(n1.x, n1.y);
+          ctx.lineTo(n2.x, n2.y);
+          ctx.stroke();
+        }
       });
 
+      // Draw nodes
       state.nodes.forEach(node => {
-        if (!node.discovered) return;
+        if (!node.visible) return;
         ctx.beginPath();
         ctx.arc(node.x, node.y, 10, 0, 2 * Math.PI);
-        ctx.fillStyle = node.owner === "player" ? "#0ff" : node.owner === "ai" ? "#f66" : "#999";
+        ctx.fillStyle = node.owner === "player" ? "#0ff" : node.owner?.startsWith("ai") ? "#f66" : "#999";
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = ctx.fillStyle;
         ctx.fill();
+        ctx.shadowBlur = 0;
         if (node === state.selectedNode) {
           ctx.strokeStyle = "#fff";
           ctx.lineWidth = 2;
@@ -173,7 +204,8 @@
         const radius = 150 + Math.random() * 50;
         const x = selected.x + Math.cos(angle) * radius;
         const y = selected.y + Math.sin(angle) * radius;
-        const newNode = new Node(x, y, `node_${state.nodes.length}`, false, true);
+        const newNode = new Node(x, y, `node_${state.nodes.length}`);
+        newNode.visible = true;
         state.nodes.push(newNode);
       }
       state.actionsLeft--;
@@ -184,59 +216,65 @@
       const dy = from.y - to.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const cost = Math.ceil(dist / 100);
+      const aiState = state.aiStates.find(ai => ai.id === owner);
       if (!state.connections.some(c => c.includes(from.id) && c.includes(to.id))) {
         if (owner === "player" && state.energy >= cost) {
           state.energy -= cost;
           state.actionsLeft--;
-        } else if (owner === "ai" && state.aiEnergy >= cost) {
-          state.aiEnergy -= cost;
+        } else if (aiState && aiState.energy >= cost) {
+          aiState.energy -= cost;
         } else {
           return;
         }
         state.connections.push([from.id, to.id]);
         to.owner = owner;
         to.active = true;
-        if (owner === "ai") state.aiOwned.push(to.id);
+        to.visible = true;
+        if (aiState) aiState.owned.push(to.id);
       }
     }
 
     function aiTurn() {
-      const aiNodes = state.nodes.filter(n => n.owner === "ai");
-      aiNodes.forEach(node => {
-        for (let i = 0; i < 2; i++) {
-          const angle = Math.random() * 2 * Math.PI;
-          const radius = 120 + Math.random() * 30;
-          const x = node.x + Math.cos(angle) * radius;
-          const y = node.y + Math.sin(angle) * radius;
-          const newNode = new Node(x, y, `node_${state.nodes.length}`, false, true);
-          state.nodes.push(newNode);
-          connectNodes(node, newNode, "ai");
-        }
+      state.aiStates.forEach(ai => {
+        const nodes = state.nodes.filter(n => ai.owned.includes(n.id));
+        ai.energy += nodes.length;
+        nodes.forEach(node => {
+          for (let i = 0; i < 2; i++) {
+            const angle = Math.random() * 2 * Math.PI;
+            const radius = 120 + Math.random() * 30;
+            const x = node.x + Math.cos(angle) * radius;
+            const y = node.y + Math.sin(angle) * radius;
+            const newNode = new Node(x, y, `node_${state.nodes.length}`);
+            newNode.visible = true;
+            state.nodes.push(newNode);
+            connectNodes(node, newNode, ai.id);
+          }
+        });
       });
     }
 
     function checkWinCondition() {
-      const total = state.nodes.filter(n => n.discovered).length;
+      const total = state.nodes.filter(n => n.visible).length;
       const playerOwned = state.nodes.filter(n => n.owner === "player").length;
-      const aiOwned = state.nodes.filter(n => n.owner === "ai").length;
+      const bestAI = state.aiStates.reduce((max, ai) => Math.max(max, ai.owned.length), 0);
 
       if (playerOwned / total >= 0.6) {
         alert("Player wins!");
         window.location.reload();
-      } else if (aiOwned / total >= 0.6) {
+      } else if (bestAI / total >= 0.6) {
         alert("AI wins!");
         window.location.reload();
       } else if (state.turn >= state.maxTurns) {
-        alert(playerOwned > aiOwned ? "Player wins by score!" : "AI wins by score!");
+        alert(playerOwned > bestAI ? "Player wins by score!" : "AI wins by score!");
         window.location.reload();
       }
     }
 
     canvas.addEventListener("click", (e) => {
-      const mx = e.clientX;
-      const my = e.clientY;
+      const mx = (e.clientX + state.camX) / state.zoom;
+      const my = (e.clientY + state.camY) / state.zoom;
       for (const node of state.nodes) {
-        if (!node.discovered) continue;
+        if (!node.visible) continue;
         const dx = node.x - mx;
         const dy = node.y - my;
         if (Math.sqrt(dx * dx + dy * dy) < 10) {
@@ -262,7 +300,6 @@
       state.energy += state.nodes.filter(n => n.active && n.owner === "player").length;
       state.actionsLeft = 3;
       state.selectedNode = null;
-      state.aiEnergy += state.nodes.filter(n => n.active && n.owner === "ai").length;
       aiTurn();
       updateHUD();
       checkWinCondition();
@@ -275,6 +312,29 @@
       } else if (e.key === "n") {
         nextTurn();
       }
+    });
+
+    // Zoom and pan
+    let dragging = false, lastX = 0, lastY = 0;
+    canvas.addEventListener("mousedown", e => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    });
+    canvas.addEventListener("mouseup", () => dragging = false);
+    canvas.addEventListener("mousemove", e => {
+      if (dragging) {
+        state.camX -= e.clientX - lastX;
+        state.camY -= e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+      }
+    });
+    canvas.addEventListener("wheel", e => {
+      e.preventDefault();
+      const zoomAmount = -e.deltaY * 0.001;
+      const newZoom = Math.min(Math.max(0.5, state.zoom + zoomAmount), 2);
+      state.zoom = newZoom;
     });
 
     setupInitialNodes();
